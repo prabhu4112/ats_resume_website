@@ -1,10 +1,13 @@
 import React, { useState, useRef, useEffect } from "react";
 
-// JobFit ATS — Integrated main component
-// Combines: Template 1 (single-column ATS), intensity filter (red/yellow/green),
-// auto-extract company name + manual edit, initial/post scores, generated practice projects
-// and a study-plan popup for moderate roles. Also disables Apply (and marks) for heavy roles.
-// PDF export uses html2canvas + jspdf (install in dev env: npm i html2canvas jspdf)
+// JobFit ATS — Updated Integrated Component
+// Improvements made:
+// - Safer company extraction (avoids salary lines)
+// - Clean, human-friendly summary generation
+// - Prefer resume's Skills: line; fallback filtered keywords
+// - Project/Experience bullets generated as short bullets (no long paragraph dumps)
+// - Better preview HTML (ul bullets) and CSS for cleaner PDF output
+// - PDF export uses html2canvas scale:3 and backgroundColor:'#ffffff' for crisper PDF
 
 export default function JobFitATSIntegrated() {
   const [resumeText, setResumeText] = useState(`Prabhu\nSkills: JavaScript, HTML, CSS\nEducation: B.Tech`);
@@ -55,7 +58,6 @@ export default function JobFitATSIntegrated() {
 
     if (heavy >= 2 || mod >= 5) return 'high';
     if (mod >= 2 || heavy === 1) {
-      // special-case: devops can be moderate if heavy words absent
       if (/devops|ci\/cd|docker|kubernetes|automation|scripting/.test(t) && heavy === 0) return 'moderate';
       return 'moderate';
     }
@@ -63,15 +65,53 @@ export default function JobFitATSIntegrated() {
     return 'moderate';
   }
 
+  function sanitizeCompany(name) {
+    return (name || '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/[^\w\s&.\-]/g, '').trim();
+  }
+
   function extractCompanyName(jd) {
-    const at = /at\s+([A-Z][A-Za-z0-9&.\- ]{2,60})/m.exec(jd);
-    if (at) return at[1].trim().split('\n')[0];
-    const isa = /([A-Z][A-Za-z0-9&.\- ]{2,60})\s+is\s+a/i.exec(jd);
-    if (isa) return isa[1].trim();
+    if (!jd) return '';
+    const lines = jd.split(/\n+/).map(l => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (/^company\b/i.test(line) && /[A-Z]/.test(line)) {
+        const parts = line.split(/[:\-–]/);
+        const maybe = parts.slice(1).join(':').trim();
+        if (maybe && !/\d|₹|lpa|per month|salary/i.test(maybe)) return sanitizeCompany(maybe);
+      }
+    }
+    const atMatch = /(?:at\s+)([A-Z][A-Za-z0-9&.\- ]{2,60})/m.exec(jd);
+    if (atMatch && !/\d|₹|lpa|per month|salary/i.test(atMatch[1])) return sanitizeCompany(atMatch[1].trim());
+    const isAMatch = /([A-Z][A-Za-z0-9&.\- ]{2,60})\s+is\s+a/i.exec(jd);
+    if (isAMatch && !/\d|₹|lpa|per month|salary/i.test(isAMatch[1])) return sanitizeCompany(isAMatch[1].trim());
+    for (const line of lines) {
+      const candidate = line.split(/[-:|]/)[0].trim();
+      if (/[A-Za-z]/.test(candidate) && !/\d|₹|lpa|per month|salary/i.test(candidate) && candidate.length < 40) {
+        return sanitizeCompany(candidate);
+      }
+    }
     return '';
   }
 
-  // Create practice projects for freshers based on role keywords
+  function extractResumeSkills(resume) {
+    const m = /skills?:\s*(.+)/i.exec(resume);
+    if (m && m[1]) {
+      return m[1].split(/[,•|;]/).map(s => s.trim()).filter(Boolean);
+    }
+    const kws = extractKeywords(resume, 20).filter(k => !/apply|job|company|companies|career|start|their|the|role/i.test(k));
+    return kws.slice(0, 10);
+  }
+
+  function generateCleanSummary(resume, jdKeywords) {
+    const topSkills = extractResumeSkills(resume).slice(0,4);
+    if (topSkills.length) {
+      return `Aspiring candidate skilled in ${topSkills.join(', ')}. Quick learner with strong communication and adaptability, ready to contribute and grow in the role.`;
+    }
+    if (jdKeywords && jdKeywords.length) {
+      return `Aspiring candidate with foundation in ${jdKeywords.slice(0,4).join(', ')}. Fast learner and motivated to adapt to company workflows.`;
+    }
+    return 'Aspiring candidate and quick learner, ready to contribute and grow in the role.';
+  }
+
   function createPracticeProjects(roleKeywords) {
     const r = roleKeywords.join(' ');
     if (/sql|database|mysql|postgres|query|stored procedure/.test(r)) {
@@ -83,7 +123,7 @@ export default function JobFitATSIntegrated() {
         ]}
       ];
     }
-    if (/ui|ux|figma|design|prototype|prototype|wireframe/.test(r)) {
+    if (/ui|ux|figma|design|prototype|wireframe/.test(r)) {
       return [
         {title: 'UI/UX Practice Project', bullets: [
           'Designed 2–3 app screens using Figma and created a clickable prototype.',
@@ -101,7 +141,6 @@ export default function JobFitATSIntegrated() {
         ]}
       ];
     }
-    // default beginner project
     return [
       {title: 'Practice Project', bullets: [
         'Completed role-relevant exercises and small tasks to build practical familiarity.',
@@ -122,7 +161,6 @@ export default function JobFitATSIntegrated() {
     setAutoCompany(auto);
     if (auto && !companyName) setCompanyName(auto);
 
-    // short suitability notes
     const notesArr = [];
     if (lev === 'high') notesArr.push('This job looks heavy on programming; recommended to skip unless you have 2–3+ yrs experience.');
     if (lev === 'moderate') notesArr.push('Moderate programming — possible with quick learning (see study plan).');
@@ -135,31 +173,29 @@ export default function JobFitATSIntegrated() {
     setKeywords(jdKeywords);
     setInitialScore(computeScore(resumeText, jdKeywords));
 
-    // matched sentences
     const sentences = splitSentences(resumeText);
     const matched = sentences.filter(s => jdKeywords.some(k => norm(s).includes(k)));
-    if (matched.length === 0) {
-      // fallback: build bullets from resume lines or create practice project bullets
-      const pract = createPracticeProjects(jdKeywords);
-      const created = pract.flatMap(p => [p.title, ...p.bullets]);
-      setMatchedSentences(created.slice(0,12));
+
+    if (matched.length > 0) {
+      setMatchedSentences(matched.slice(0,12).map(s => s.length > 180 ? s.slice(0,177)+'...' : s));
     } else {
-      setMatchedSentences(matched.slice(0,12));
+      const pract = createPracticeProjects(jdKeywords);
+      const created = pract.flatMap(p => {
+        return [p.title, ...p.bullets.map(b => (b.length>180? b.slice(0,177)+'...' : b))];
+      });
+      setMatchedSentences(created.slice(0,12));
     }
 
-    // compute post score using tailored text
-    const tailoredText = matched.length ? matched.join(' ') : matchedSentences.join(' ');
+    const tailoredText = (matched.length ? matched.join(' ') : matchedSentences.join(' '));
     const newScore = computeScore(tailoredText || resumeText, jdKeywords);
     setPostScore(newScore);
 
-    // refresh intensity and notes
     const lev = analyzeIntensity(jobDescText);
     setIntensity(lev);
     const notesArr = [];
     if (lev === 'high') notesArr.push('Red — heavy programming demand. The tool strongly suggests not applying.');
     if (lev === 'moderate') notesArr.push('Yellow — consider applying and prepare the short study plan.');
     if (lev === 'low') notesArr.push('Green — safe to apply.');
-    // list missing keywords
     const missing = keywords.filter(k => !norm(resumeText).includes(k)).slice(0,8);
     if (missing.length) notesArr.push('Missing / recommended keywords: ' + missing.join(', '));
     setNotes(notesArr);
@@ -171,7 +207,7 @@ export default function JobFitATSIntegrated() {
       const { jsPDF } = await import('jspdf');
       const el = previewRef.current;
       if (!el) return;
-      const canvas = await html2canvas(el, { scale: 2 });
+      const canvas = await html2canvas(el, { scale: 3, backgroundColor: '#ffffff', useCORS: true });
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
@@ -188,14 +224,17 @@ export default function JobFitATSIntegrated() {
     }
   }
 
-  // ----- small UI helpers -----
+  useEffect(()=>{
+    if (jobDescText.trim()) handleAnalyze();
+    else { setKeywords([]); setInitialScore(null); setPostScore(null); setIntensity(null); setAutoCompany(''); }
+  }, [jobDescText]);
+
   function IntensityBadge({level}) {
     if (!level) return null;
     const s = level === 'high' ? {bg:'#fff1f2', color:'#9f1239', text:'RED — Heavy programming'} : level==='moderate' ? {bg:'#fffbeb', color:'#92400e', text:'YELLOW — Moderate'} : {bg:'#ecfdf5', color:'#065f46', text:'GREEN — Light'};
     return <div style={{background:s.bg, color:s.color, padding:'6px 10px', borderRadius:8, fontWeight:800}}>{s.text}</div>;
   }
 
-  // study plan examples (used in modal)
   function getStudyPlan() {
     const t = keywords.join(' ');
     if (/sql|database|mysql|postgres|query|stored procedure/.test(t)) {
@@ -224,12 +263,6 @@ export default function JobFitATSIntegrated() {
     }
     return ['Review the missing keywords listed in suggestions', 'Prepare quick examples or small practice tasks to show in interviews'];
   }
-
-  useEffect(()=>{
-    if (jobDescText.trim()) handleAnalyze();
-    else { setKeywords([]); setInitialScore(null); setPostScore(null); setIntensity(null); setAutoCompany(''); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobDescText]);
 
   return (
     <div style={{ fontFamily: 'system-ui, sans-serif', padding: 18 }}>
@@ -278,31 +311,39 @@ export default function JobFitATSIntegrated() {
         <div>
           <div style={{ padding:12, border:'1px solid #e6e6e6', borderRadius:8 }}>
             <div style={{ fontWeight:800, marginBottom:8 }}>Tailored resume preview (Template 1)</div>
-            <div ref={previewRef} style={{ background:'#fff', padding:12, borderRadius:6 }}>
-              <div style={{ fontSize:18, fontWeight:900 }}>Prabhu</div>
-              <div style={{ color:'#374151', marginBottom:8 }}>{companyName ? `${companyName} — Tailored Resume` : 'Tailored Resume'}</div>
+            <div ref={previewRef} style={{ background:'#fff', padding:18, borderRadius:6 }}>
 
-              <div style={{ fontWeight:800, marginTop:6 }}>SUMMARY</div>
-              <div style={{ marginTop:6, marginBottom:8 }}>{/* auto-generated summary from keywords */}
-                {keywords.length ? `Aspiring candidate with knowledge in ${keywords.slice(0,5).join(', ')}. Quick learner and able to adapt to role requirements.` : 'Paste your resume and JD to generate a summary.'}
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                <div>
+                  <div style={{ fontSize:18, fontWeight:900 }}>Prabhu</div>
+                  <div style={{ fontSize:12, color:'#374151', marginTop:4 }}>{companyName ? `${companyName} — Tailored Resume` : 'Tailored Resume'}</div>
+                </div>
+                <div style={{ textAlign:'right', fontSize:12, color:'#374151' }}></div>
               </div>
 
-              <div style={{ fontWeight:800 }}>SKILLS</div>
-              <div style={{ marginTop:6, marginBottom:8 }}>{/* collect skils from resume + top keywords */}
-                {(resumeText.match(/Skills?:\s*(.*)/i) || ['','']).slice(1).join('').trim() || keywords.slice(0,8).join(' • ')}
+              <div style={{ marginTop:12 }}>
+                <div style={{ fontWeight:800, fontSize:12 }}>SUMMARY</div>
+                <div style={{ marginTop:6, fontSize:13, lineHeight:1.4 }}>{generateCleanSummary(resumeText, keywords)}</div>
               </div>
 
-              <div style={{ fontWeight:800 }}>PROJECTS / EXPERIENCE</div>
-              <div style={{ marginTop:6 }}>
-                {matchedSentences.length===0 ? (
-                  <div style={{ color:'#6b7280' }}>No matched bullets. Generated practice projects will appear after Generate.</div>
-                ) : (
-                  matchedSentences.map((s,i)=>(<div key={i} style={{ marginBottom:6 }}>• {s}</div>))
-                )}
+              <div style={{ marginTop:10 }}>
+                <div style={{ fontWeight:800, fontSize:12 }}>SKILLS</div>
+                <div style={{ marginTop:6, fontSize:13 }}>{extractResumeSkills(resumeText).slice(0,10).join(' • ')}</div>
               </div>
 
-              <div style={{ fontWeight:800, marginTop:8 }}>EDUCATION</div>
-              <div style={{ marginTop:6 }}>B.Tech — Your College — Year</div>
+              <div style={{ marginTop:10 }}>
+                <div style={{ fontWeight:800, fontSize:12 }}>PROJECTS / EXPERIENCE</div>
+                <ul style={{ marginTop:8, paddingLeft:18 }}>
+                  {matchedSentences.length === 0 ? (
+                    <li style={{ color:'#6b7280' }}>No matched bullets. Generated practice projects will appear after Generate.</li>
+                  ) : matchedSentences.map((s,i) => (<li key={i} style={{ marginBottom:6, fontSize:13, lineHeight:1.35 }}>{s}</li>))}
+                </ul>
+              </div>
+
+              <div style={{ marginTop:12 }}>
+                <div style={{ fontWeight:800, fontSize:12 }}>EDUCATION</div>
+                <div style={{ marginTop:6, fontSize:13 }}>B.Tech — Your College — Year</div>
+              </div>
 
             </div>
 
@@ -320,7 +361,6 @@ export default function JobFitATSIntegrated() {
         </div>
       </div>
 
-      {/* Study plan modal */}
       {showPlan && (
         <div style={{ position:'fixed', inset:0, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.35)' }}>
           <div style={{ width:520, background:'#fff', padding:18, borderRadius:10 }}>
